@@ -1,221 +1,144 @@
-const { connect } = require("puppeteer-real-browser");
+const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 const log = (...args) => console.error(...args);
-const chromePath = process.env.CHROME_PATH || '/usr/bin/chromium-browser';
 
-function generateRandomString(length) {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
+// Run single_gen.js as isolated child process
+function runIsolatedGeneration(iteration, totalRuns) {
+    return new Promise((resolve) => {
+        log(`\n>>> [${iteration}/${totalRuns}] Spawning isolated process...`);
+        
+        const env = { 
+            ...process.env,
+            GENERATION_RUN: iteration.toString()
+        };
+        
+        const child = spawn('node', ['single_gen.js'], {
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            cwd: process.cwd()
+        });
+        
+        let stdout = '';
+        let stderr = '';
+        
+        child.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+        
+        child.stderr.on('data', (data) => {
+            const str = data.toString();
+            stderr += str;
+            // Print logs in real-time
+            process.stderr.write(`[Run ${iteration}] ${str}`);
+        });
+        
+        // Timeout - kill if takes too long
+        const timeout = setTimeout(() => {
+            log(`>>> [${iteration}] Timeout - killing process`);
+            child.kill('SIGKILL');
+        }, 120000); // 2 minute timeout per run
+        
+        child.on('close', (code) => {
+            clearTimeout(timeout);
+            
+            // Kill any leftover chromium processes
+            try {
+                require('child_process').execSync('pkill -9 -f chromium 2>/dev/null || true', { stdio: 'ignore' });
+            } catch (e) {}
+            
+            if (code === 0) {
+                // Token is printed to stdout (last non-empty line)
+                const lines = stdout.trim().split('\n').filter(l => l.trim());
+                const token = lines[lines.length - 1];
+                if (token && token.length > 20) {
+                    log(`>>> [${iteration}] SUCCESS - got token`);
+                    resolve(token);
+                } else {
+                    log(`>>> [${iteration}] Completed but no valid token in output`);
+                    resolve(null);
+                }
+            } else {
+                log(`>>> [${iteration}] Failed with exit code: ${code}`);
+                resolve(null);
+            }
+        });
+        
+        child.on('error', (err) => {
+            clearTimeout(timeout);
+            log(`>>> [${iteration}] Process spawn error:`, err.message);
+            resolve(null);
+        });
+    });
 }
 
-async function wiggleMouse(page) {
+// Cleanup any existing chrome processes
+function cleanupProcesses() {
     try {
-        await page.mouse.move(100, 100);
-        await page.mouse.move(200, 200, { steps: 10 });
-        await page.mouse.move(150, 250, { steps: 10 });
+        require('child_process').execSync('pkill -9 -f chromium 2>/dev/null || true', { stdio: 'ignore' });
+        require('child_process').execSync('pkill -9 -f chrome 2>/dev/null || true', { stdio: 'ignore' });
     } catch (e) {}
-}
-
-async function generateSingleToken(iteration, totalRuns) {
-    log(`\n>>> [${iteration}/${totalRuns}] Starting...`);
-    
-    let browser, page;
-    try {
-        const conn = await connect({
-            headless: false,
-            turnstile: true,
-            executablePath: chromePath,
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--window-size=1280,800",
-                "--disable-gpu",
-                "--disable-application-cache"
-            ]
-        });
-        browser = conn.browser;
-        page = conn.page;
-    } catch (e) {
-        log(">>> Launch failed:", e.message);
-        return null;
-    }
-
-    try {
-        // Clear state
-        log(`>>> [${iteration}] Clearing cookies...`);
-        try {
-            const client = await page.target().createCDPSession();
-            await client.send('Network.clearBrowserCookies');
-            await client.send('Network.clearBrowserCache');
-            await page.goto('about:blank');
-            await page.evaluate(() => {
-                localStorage.clear();
-                sessionStorage.clear();
-            });
-        } catch (e) {}
-
-        // Get email
-        log(`>>> [${iteration}] Getting email...`);
-        
-        const emailPromise = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error("Email timeout")), 35000);
-            page.on('response', async (response) => {
-                if (response.url().includes('temp-mail.org/mailbox') && response.request().method() === 'POST') {
-                    try {
-                        const json = await response.json();
-                        if (json.mailbox) {
-                            clearTimeout(timeout);
-                            resolve(json.mailbox);
-                        }
-                    } catch (e) {}
-                }
-            });
-        });
-
-        await page.goto("https://temp-mail.org/", { waitUntil: "networkidle2", timeout: 50000 });
-        await wiggleMouse(page);
-        
-        let email;
-        try {
-            email = await emailPromise;
-        } catch (e) {
-            // Fallback to DOM
-            for (let i = 0; i < 15; i++) {
-                const domEmail = await page.evaluate(() => {
-                    const input = document.querySelector('#mail');
-                    return input ? input.value : null;
-                });
-                if (domEmail && domEmail.includes('@')) {
-                    email = domEmail;
-                    break;
-                }
-                await new Promise(r => setTimeout(r, 1000));
-            }
-        }
-        
-        if (!email) throw new Error("No email");
-        log(`>>> [${iteration}] Email: ${email}`);
-
-        // Credentials
-        const username = "user" + generateRandomString(8);
-        const password = "Pass" + generateRandomString(8) + "!";
-
-        // Captcha
-        log(`>>> [${iteration}] Captcha...`);
-        await page.goto("https://puter.com/login", { waitUntil: "domcontentloaded", timeout: 30000 });
-        await wiggleMouse(page);
-
-        const sitekey = "0x4AAAAAABvMyOLo9EwjFVzC";
-
-        await page.evaluate((sk) => {
-            document.body.innerHTML = '<div id="wrapper" style="display:flex;justify-content:center;align-items:center;height:100vh;"><div id="cf-container"></div></div>';
-            window.cfToken = null;
-            const script = document.createElement('script');
-            script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-            script.onload = () => {
-                const int = setInterval(() => {
-                    if (window.turnstile) {
-                        clearInterval(int);
-                        window.turnstile.render("#cf-container", { sitekey: sk, callback: (t) => { window.cfToken = t; } });
-                    }
-                }, 100);
-            };
-            document.head.appendChild(script);
-        }, sitekey);
-
-        try {
-            await page.waitForSelector("#cf-container iframe", { timeout: 10000 });
-            await new Promise(r => setTimeout(r, 1500));
-            const el = await page.$("#cf-container iframe");
-            const box = await el.boundingBox();
-            if (box) {
-                await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
-                await page.mouse.down();
-                await new Promise(r => setTimeout(r, 100));
-                await page.mouse.up();
-            }
-        } catch (e) {}
-
-        await page.waitForFunction(() => window.cfToken !== null, { timeout: 45000 });
-        const cfToken = await page.evaluate(() => window.cfToken);
-
-        // Signup
-        log(`>>> [${iteration}] Signup...`);
-        
-        const responseData = await page.evaluate(async (payload) => {
-            const res = await fetch("https://puter.com/signup", {
-                method: "POST",
-                headers: {
-                    "accept": "*/*",
-                    "content-type": "application/json",
-                    "origin": "https://puter.com",
-                    "referer": "https://puter.com/"
-                },
-                body: JSON.stringify({
-                    username: payload.username,
-                    email: payload.email,
-                    password: payload.password,
-                    referrer: "https://docs.puter.com/",
-                    send_confirmation_code: false,
-                    p102xyzname: "",
-                    "cf-turnstile-response": payload.cfToken
-                })
-            });
-            const text = await res.text();
-            try { return JSON.parse(text); } catch (e) { return { error: text }; }
-        }, { username, email, password, cfToken });
-
-        await browser.close();
-
-        if (responseData.token) {
-            log(`>>> [${iteration}] SUCCESS!`);
-            return responseData.token;
-        } else {
-            log(`>>> [${iteration}] Failed:`, JSON.stringify(responseData));
-            return null;
-        }
-
-    } catch (err) {
-        log(`>>> [${iteration}] Error:`, err.message);
-        if (browser) await browser.close();
-        return null;
-    }
 }
 
 (async () => {
     const runs = parseInt(process.env.NUM_RUNS) || 5;
-    log(`>>> Starting ${runs} runs...`);
+    log(`>>> Multi-generator starting ${runs} isolated runs...`);
+    log(`>>> Each run spawns a fresh Node process to avoid connection reuse issues`);
     
-    // Ensure tokens directory exists
-    if (!fs.existsSync('tokens')) fs.mkdirSync('tokens');
+    // Ensure tokens directory
+    if (!fs.existsSync('tokens')) {
+        fs.mkdirSync('tokens', { recursive: true });
+    }
+    
+    // Initial cleanup
+    cleanupProcesses();
     
     const tokens = [];
     
     for (let i = 1; i <= runs; i++) {
-        const token = await generateSingleToken(i, runs);
+        // Clean before each run
+        cleanupProcesses();
+        
+        // Wait a bit for cleanup
+        await new Promise(r => setTimeout(r, 2000));
+        
+        const token = await runIsolatedGeneration(i, runs);
+        
         if (token) {
             tokens.push(token);
             fs.appendFileSync('tokens/all_tokens.txt', token + '\n');
-            console.log(token); // stdout
             
+            // Also print to stdout
+            console.log(token);
+            
+            // Send to val.town
             try {
                 await fetch("https://gigachadtrey--a1b5c282cb3711f0857d42dde27851f2.web.val.run", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ token, batch_index: i })
                 });
-            } catch (e) {}
+                log(`>>> [${i}] Sent to Val Town`);
+            } catch (e) {
+                log(`>>> [${i}] Val Town send failed (non-critical)`);
+            }
         }
-        await new Promise(r => setTimeout(r, 3000));
+        
+        // Longer delay between runs for stability
+        log(`>>> Waiting 5s before next run...`);
+        await new Promise(r => setTimeout(r, 5000));
     }
     
-    log(`\n>>> Complete. ${tokens.length}/${runs} tokens generated.`);
-    log(">>> Saved to: tokens/all_tokens.txt");
+    // Final cleanup
+    cleanupProcesses();
+    
+    log(`\n==========================================`);
+    log(`>>> COMPLETE: ${tokens.length}/${runs} tokens generated`);
+    log(`>>> Saved to: tokens/all_tokens.txt`);
+    log(`==========================================\n`);
+    
+    if (tokens.length === 0) {
+        process.exit(1);
+    }
 })();

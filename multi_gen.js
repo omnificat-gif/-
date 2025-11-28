@@ -1,4 +1,4 @@
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 
 const log = (...args) => console.error('[MULTI]', ...args);
@@ -24,7 +24,7 @@ function runSingleGeneration(iteration, totalRuns) {
         });
 
         const timeout = setTimeout(() => {
-            log(`[${iteration}] Timeout - killing`);
+            log(`[${iteration}] Timeout`);
             child.kill('SIGKILL');
         }, 180000);
 
@@ -34,7 +34,7 @@ function runSingleGeneration(iteration, totalRuns) {
             if (code === 0) {
                 const lines = stdout.trim().split('\n').filter(l => l.trim());
                 const token = lines[lines.length - 1];
-                if (token && token.length > 30 && !token.includes(' ')) {
+                if (token && token.length > 30 && !token.includes(' ') && !token.includes('[')) {
                     log(`[${iteration}] SUCCESS`);
                     resolve(token);
                 } else {
@@ -42,14 +42,14 @@ function runSingleGeneration(iteration, totalRuns) {
                     resolve(null);
                 }
             } else {
-                log(`[${iteration}] Exit code: ${code}`);
+                log(`[${iteration}] Failed (code ${code})`);
                 resolve(null);
             }
         });
 
         child.on('error', (err) => {
             clearTimeout(timeout);
-            log(`[${iteration}] Spawn error:`, err.message);
+            log(`[${iteration}] Error:`, err.message);
             resolve(null);
         });
     });
@@ -70,8 +70,6 @@ function sleep(ms) {
     const tokens = [];
 
     for (let i = 1; i <= runs; i++) {
-        await sleep(2000);
-
         const token = await runSingleGeneration(i, runs);
 
         if (token) {
@@ -92,12 +90,14 @@ function sleep(ms) {
             } catch (e) {}
         }
 
-        log(`Waiting 5s...`);
-        await sleep(5000);
+        if (i < runs) {
+            log(`Waiting 3s...`);
+            await sleep(3000);
+        }
     }
 
     log('==========================================');
-    log(`COMPLETE: ${tokens.length}/${runs} tokens`);
+    log(`DONE: ${tokens.length}/${runs} tokens`);
     log('==========================================');
 
     if (tokens.length === 0) process.exit(1);

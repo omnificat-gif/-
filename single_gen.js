@@ -24,18 +24,96 @@ async function wiggleMouse(page) {
         await page.mouse.move(100, 100);
         await page.mouse.move(200, 150, { steps: 5 });
         await page.mouse.move(150, 200, { steps: 5 });
-        await page.mouse.move(300, 250, { steps: 5 });
     } catch (e) {}
 }
 
-(async () => {
-    log('DISPLAY:', process.env.DISPLAY);
+async function getEmailFromTempMail(browser) {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    let email = null;
+    
+    try {
+        log('Trying temp-mail.org...');
+        
+        page.on('response', async (response) => {
+            try {
+                const url = response.url();
+                if (url.includes('temp-mail.org') && url.includes('mailbox') && response.request().method() === 'POST') {
+                    const json = await response.json().catch(() => null);
+                    if (json && json.mailbox && !email) {
+                        email = json.mailbox;
+                    }
+                }
+            } catch (e) {}
+        });
 
+        await page.goto('https://temp-mail.org/en/', { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 30000 
+        });
+        
+        await sleep(3000);
+        await wiggleMouse(page);
+
+        for (let i = 0; i < 20 && !email; i++) {
+            try {
+                const domEmail = await page.evaluate(() => {
+                    const el = document.querySelector('#mail');
+                    if (el && el.value && el.value.includes('@')) return el.value;
+                    const copyBtn = document.querySelector('[data-clipboard-target="#mail"]');
+                    if (copyBtn) {
+                        const input = document.querySelector(copyBtn.getAttribute('data-clipboard-target'));
+                        if (input && input.value && input.value.includes('@')) return input.value;
+                    }
+                    return null;
+                });
+                if (domEmail) {
+                    email = domEmail;
+                    break;
+                }
+            } catch (e) {}
+            await sleep(1000);
+        }
+    } catch (e) {
+        log('temp-mail.org failed:', e.message);
+    }
+    
+    await page.close().catch(() => {});
+    
+    if (email) {
+        log('Got email:', email);
+        return email;
+    }
+    
+    // Fallback: use 1secmail API (no browser needed)
+    log('Trying 1secmail API fallback...');
+    const fallbackPage = await browser.newPage();
+    try {
+        await fallbackPage.goto('https://www.1secmail.com/api/v1/?action=genRandomMailbox&count=1', {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+        });
+        const content = await fallbackPage.evaluate(() => document.body.innerText);
+        const parsed = JSON.parse(content);
+        if (parsed && parsed[0]) {
+            email = parsed[0];
+            log('Got email from 1secmail:', email);
+        }
+    } catch (e) {
+        log('1secmail failed:', e.message);
+    }
+    await fallbackPage.close().catch(() => {});
+    
+    return email;
+}
+
+(async () => {
     if (!fs.existsSync('tokens')) {
         fs.mkdirSync('tokens', { recursive: true });
     }
 
-    log('Launching browser (using bundled Chromium)...');
+    log('Launching browser...');
     
     const browser = await puppeteer.launch({
         headless: 'new',
@@ -63,46 +141,12 @@ async function wiggleMouse(page) {
         defaultViewport: { width: 1280, height: 800 }
     });
 
-    const page = await browser.newPage();
-
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
     try {
         // ====== 1. GET EMAIL ======
-        log('Getting temp email...');
-
-        let emailFound = null;
-
-        page.on('response', async (response) => {
-            try {
-                if (response.url().includes('temp-mail.org') && response.url().includes('mailbox')) {
-                    const json = await response.json().catch(() => null);
-                    if (json && json.mailbox && !emailFound) {
-                        emailFound = json.mailbox;
-                        log('Got email from network:', emailFound);
-                    }
-                }
-            } catch (e) {}
-        });
-
-        await page.goto('https://temp-mail.org/', { waitUntil: 'networkidle2', timeout: 60000 });
-        await wiggleMouse(page);
-
-        for (let i = 0; i < 30 && !emailFound; i++) {
-            const domEmail = await page.evaluate(() => {
-                const el = document.querySelector('#mail');
-                return el ? el.value : null;
-            });
-            if (domEmail && domEmail.includes('@')) {
-                emailFound = domEmail;
-                log('Got email from DOM:', emailFound);
-                break;
-            }
-            await sleep(1000);
-        }
-
+        const emailFound = await getEmailFromTempMail(browser);
+        
         if (!emailFound) {
-            throw new Error('Could not get temp email after 30 seconds');
+            throw new Error('Could not get temp email from any source');
         }
 
         // ====== 2. GENERATE CREDS ======
@@ -111,7 +155,10 @@ async function wiggleMouse(page) {
         log('Username:', username);
 
         // ====== 3. SOLVE TURNSTILE ON PUTER ======
-        log('Navigating to Puter for captcha...');
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        log('Navigating to Puter...');
         await page.goto('https://puter.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
         await wiggleMouse(page);
 
@@ -140,7 +187,7 @@ async function wiggleMouse(page) {
             document.head.appendChild(script);
         }, sitekey);
 
-        log('Waiting for Turnstile widget...');
+        log('Waiting for Turnstile...');
         await sleep(3000);
 
         try {
@@ -148,7 +195,7 @@ async function wiggleMouse(page) {
             if (iframeHandle) {
                 const box = await iframeHandle.boundingBox();
                 if (box) {
-                    log('Clicking Turnstile widget...');
+                    log('Clicking widget...');
                     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
                     await sleep(500);
                     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -157,16 +204,16 @@ async function wiggleMouse(page) {
                 }
             }
         } catch (e) {
-            log('Widget click issue:', e.message);
+            log('Widget click issue (continuing):', e.message);
         }
 
-        log('Waiting for cfToken...');
+        log('Waiting for token...');
         await page.waitForFunction(() => window.cfToken !== null, { timeout: 90000 });
         const cfToken = await page.evaluate(() => window.cfToken);
         log('Got Turnstile token!');
 
         // ====== 4. SIGNUP ======
-        log('Sending signup request...');
+        log('Signing up...');
 
         const signupResult = await page.evaluate(async (data) => {
             try {
@@ -201,7 +248,7 @@ async function wiggleMouse(page) {
 
         if (signupResult.ok && signupResult.data && signupResult.data.token) {
             const token = signupResult.data.token;
-            log('SUCCESS! Got token.');
+            log('SUCCESS!');
 
             fs.writeFileSync('tokens/token.txt', token);
             fs.appendFileSync('tokens/all_tokens.txt', token + '\n');
@@ -217,14 +264,11 @@ async function wiggleMouse(page) {
                     });
                 }, signupResult.data);
                 log('Sent to Val Town');
-            } catch (e) {
-                log('Val Town send failed (non-critical)');
-            }
+            } catch (e) {}
 
         } else {
             log('SIGNUP FAILED');
-            log('Status:', signupResult.status);
-            log('Response:', JSON.stringify(signupResult.data || signupResult.raw || signupResult.error));
+            log('Response:', JSON.stringify(signupResult));
             process.exit(1);
         }
 

@@ -3,13 +3,6 @@ const fs = require('fs');
 
 const log = (...args) => console.error('[MULTI]', ...args);
 
-function cleanupProcesses() {
-    try {
-        execSync('pkill -9 -f "chromium" 2>/dev/null || true', { stdio: 'ignore' });
-        execSync('pkill -9 -f "chrome" 2>/dev/null || true', { stdio: 'ignore' });
-    } catch (e) {}
-}
-
 function runSingleGeneration(iteration, totalRuns) {
     return new Promise((resolve) => {
         log(`[${iteration}/${totalRuns}] Starting...`);
@@ -21,26 +14,22 @@ function runSingleGeneration(iteration, totalRuns) {
         });
 
         let stdout = '';
-        let stderr = '';
 
         child.stdout.on('data', (data) => {
             stdout += data.toString();
         });
 
         child.stderr.on('data', (data) => {
-            const str = data.toString();
-            stderr += str;
-            process.stderr.write(str);
+            process.stderr.write(data.toString());
         });
 
         const timeout = setTimeout(() => {
             log(`[${iteration}] Timeout - killing`);
             child.kill('SIGKILL');
-        }, 180000); // 3 min timeout
+        }, 180000);
 
         child.on('close', (code) => {
             clearTimeout(timeout);
-            cleanupProcesses();
 
             if (code === 0) {
                 const lines = stdout.trim().split('\n').filter(l => l.trim());
@@ -49,7 +38,7 @@ function runSingleGeneration(iteration, totalRuns) {
                     log(`[${iteration}] SUCCESS`);
                     resolve(token);
                 } else {
-                    log(`[${iteration}] No valid token in output`);
+                    log(`[${iteration}] No valid token`);
                     resolve(null);
                 }
             } else {
@@ -78,12 +67,9 @@ function sleep(ms) {
         fs.mkdirSync('tokens', { recursive: true });
     }
 
-    cleanupProcesses();
-
     const tokens = [];
 
     for (let i = 1; i <= runs; i++) {
-        cleanupProcesses();
         await sleep(2000);
 
         const token = await runSingleGeneration(i, runs);
@@ -106,11 +92,9 @@ function sleep(ms) {
             } catch (e) {}
         }
 
-        log(`Waiting 5s before next run...`);
+        log(`Waiting 5s...`);
         await sleep(5000);
     }
-
-    cleanupProcesses();
 
     log('==========================================');
     log(`COMPLETE: ${tokens.length}/${runs} tokens`);

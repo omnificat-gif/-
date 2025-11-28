@@ -28,52 +28,17 @@ async function wiggleMouse(page) {
     } catch (e) {}
 }
 
-async function clickTurnstileIfPresent(page) {
-    await sleep(2000);
-    try {
-        const frames = page.frames();
-        for (const frame of frames) {
-            const url = frame.url();
-            if (url.includes('challenges.cloudflare.com')) {
-                log('Found Cloudflare challenge frame');
-                const checkbox = await frame.$('input[type="checkbox"]');
-                if (checkbox) {
-                    await checkbox.click();
-                    log('Clicked checkbox');
-                    await sleep(3000);
-                    return;
-                }
-                const body = await frame.$('body');
-                if (body) {
-                    const box = await body.boundingBox();
-                    if (box) {
-                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                        log('Clicked challenge frame center');
-                        await sleep(3000);
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        log('Turnstile click error (non-fatal):', e.message);
-    }
-}
-
 (async () => {
-    const chromePath = process.env.CHROME_PATH || '/usr/bin/chromium-browser';
-    log('Chrome path:', chromePath);
     log('DISPLAY:', process.env.DISPLAY);
 
-    // Ensure tokens dir exists
     if (!fs.existsSync('tokens')) {
         fs.mkdirSync('tokens', { recursive: true });
     }
 
-    log('Launching browser...');
+    log('Launching browser (using bundled Chromium)...');
     
     const browser = await puppeteer.launch({
-        headless: false,
-        executablePath: chromePath,
+        headless: 'new',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -81,6 +46,7 @@ async function clickTurnstileIfPresent(page) {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
+            '--single-process',
             '--disable-gpu',
             '--disable-background-networking',
             '--disable-default-apps',
@@ -121,9 +87,7 @@ async function clickTurnstileIfPresent(page) {
 
         await page.goto('https://temp-mail.org/', { waitUntil: 'networkidle2', timeout: 60000 });
         await wiggleMouse(page);
-        await clickTurnstileIfPresent(page);
 
-        // Wait for email via DOM
         for (let i = 0; i < 30 && !emailFound; i++) {
             const domEmail = await page.evaluate(() => {
                 const el = document.querySelector('#mail');
@@ -179,7 +143,6 @@ async function clickTurnstileIfPresent(page) {
         log('Waiting for Turnstile widget...');
         await sleep(3000);
 
-        // Click the widget
         try {
             const iframeHandle = await page.$('#cf-container iframe');
             if (iframeHandle) {
@@ -243,10 +206,8 @@ async function clickTurnstileIfPresent(page) {
             fs.writeFileSync('tokens/token.txt', token);
             fs.appendFileSync('tokens/all_tokens.txt', token + '\n');
 
-            // Print token to stdout (for capture by multi_gen)
             console.log(token);
 
-            // Send to val.town
             try {
                 await page.evaluate(async (payload) => {
                     await fetch('https://gigachadtrey--a1b5c282cb3711f0857d42dde27851f2.web.val.run', {

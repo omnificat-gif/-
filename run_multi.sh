@@ -5,36 +5,26 @@ export CHROME_PATH=$(which chromium-browser 2>/dev/null || which chromium 2>/dev
 export NUM_RUNS=${1:-5}
 mkdir -p tokens
 
-echo ">>> Chrome path: $CHROME_PATH"
-echo ">>> Will generate $NUM_RUNS tokens"
+echo ">>> Chrome: $CHROME_PATH"
+echo ">>> Runs: $NUM_RUNS"
 
-# Kill any existing Xvfb/chromium
-pkill -9 Xvfb 2>/dev/null || true
+# Cleanup
 pkill -9 -f chromium 2>/dev/null || true
+pkill -9 -f Xvfb 2>/dev/null || true
+rm -f /tmp/.X*-lock 2>/dev/null || true
 sleep 1
 
-# Start Xvfb manually (not xvfb-run) so child processes inherit DISPLAY
-export DISPLAY=:99
-Xvfb :99 -screen 0 1920x1080x24 -ac &
-XVFB_PID=$!
-sleep 2
-
-echo ">>> Xvfb started on DISPLAY=:99 (PID: $XVFB_PID)"
-
-# Run the multi generator
-node multi_gen.js
+# Use xvfb-run
+echo ">>> Running with xvfb-run..."
+xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24 -ac" node multi_gen.js
 EXIT_CODE=$?
 
 # Cleanup
-echo ">>> Cleaning up..."
-kill $XVFB_PID 2>/dev/null || true
 pkill -9 -f chromium 2>/dev/null || true
 
-# Show results
 echo ""
 echo "=========================================="
-echo "GENERATED TOKENS:"
-echo "=========================================="
+echo "ALL TOKENS:"
 cat tokens/all_tokens.txt 2>/dev/null || echo "(none)"
 echo "=========================================="
 

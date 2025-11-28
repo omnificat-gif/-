@@ -1,8 +1,8 @@
 #!/bin/bash
 set -ex
 
-# Install puppeteer-real-browser
-npm install puppeteer-real-browser
+# Install npm packages
+npm install
 
 # Make scripts executable
 chmod +x run_single.sh run_multi.sh
@@ -10,5 +10,8 @@ chmod +x run_single.sh run_multi.sh
 # Create output directory
 mkdir -p tokens
 
-# Verify chromium installation
-which chromium-browser || which chromium || echo "Chromium not found in PATH"
+# Verify chromium
+which chromium-browser || which chromium || echo "Warning: chromium not found"
+
+# Test that chromium can at least show version
+chromium-browser --version || chromium --version || true

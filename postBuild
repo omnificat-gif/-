@@ -1,0 +1,14 @@
+#!/bin/bash
+set -ex
+
+# Install puppeteer-real-browser
+npm install puppeteer-real-browser
+
+# Make scripts executable
+chmod +x run_single.sh run_multi.sh
+
+# Create output directory
+mkdir -p tokens
+
+# Verify chromium installation
+which chromium-browser || which chromium || echo "Chromium not found in PATH"
